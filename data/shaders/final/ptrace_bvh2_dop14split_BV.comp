@@ -1,0 +1,328 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#include "shared/header_bvh_traversal.glsl"
+
+#define DOP_14
+#include "shared/bv_dop.glsl"
+#define INCLUDE_FROM_SHADER
+#include "shared/data_bvh.h"
+
+layout(push_constant, scalar) uniform uPushConstant
+{
+    PC_Trace data;
+    i32 depth;
+} pc;
+
+layout(local_size_x = 32, local_size_y_id = 0) in;
+
+#define EPS 1e-5f
+#define EPS_BV_INTERSECT 1e-5f
+#define STACK_SIZE 64
+#define DYNAMIC_FETCH_THRESHOLD 20
+#define BOTTOM_OF_STACK 0x76543210
+
+shared u32 nextRay[gl_WorkGroupSize.y];
+
+void trace()
+{
+    u32 stackId;
+    i32 traversalStack[STACK_SIZE];
+    i32 nodeDepthStack[STACK_SIZE];
+    traversalStack[0] = BOTTOM_OF_STACK;
+    nodeDepthStack[0] = 0;
+
+    i32 nodeId = BOTTOM_OF_STACK;
+    i32 leafId;
+    u32 rayId;
+    i32 nodeDepth;
+
+    vec3 dir;
+    vec3 origin;
+    f32 tmin;
+
+    vec3 idir;
+    vec4 idirRest;
+    vec3 ood;
+    vec4 oodRest;
+
+    BVH2_DOP3_c bvh = BVH2_DOP3_c(pc.data.bvhAddress);
+    BVH2_DOP14_SPLIT_c bvhRest = BVH2_DOP14_SPLIT_c(pc.data.bvhAuxAddress);
+    BvhTriangles triangles = BvhTriangles(pc.data.bvhTrianglesAddress);
+    BvhTriangleIndices triangleIndices = BvhTriangleIndices(pc.data.bvhTriangleIndicesAddress);
+
+    RayBufferMetadata_ref rayBufMeta = RayBufferMetadata_ref(pc.data.rayBufferMetadataAddress);
+    RayBuffer_ref rayBuffer = RayBuffer_ref(pc.data.rayBufferAddress);
+    RayTraceResults_BV_ref results = RayTraceResults_BV_ref(pc.data.rayTraceResultAddress);
+    RayTraceResult_BV result;
+
+    const u32 rayCount = rayBufMeta.data.rayCount;
+
+    while (true) {
+        const bool isTerminated = (nodeId == BOTTOM_OF_STACK);
+        const uvec4 ballot = subgroupBallot(isTerminated);
+        const u32 terminatedCount = subgroupBallotBitCount(ballot);
+        const u32 terminatedId = subgroupBallotExclusiveBitCount(ballot);
+
+        if (isTerminated) {
+            if (terminatedId == 0)
+                nextRay[gl_SubgroupID] = atomicAdd(rayBufMeta.data.rayTracedCount, terminatedCount);
+            memoryBarrier(gl_ScopeSubgroup, gl_StorageSemanticsShared, gl_SemanticsAcquireRelease);
+
+            rayId = nextRay[gl_SubgroupID] + terminatedId;
+            if (rayId >= rayCount)
+                break;
+
+            const Ray ray = rayBuffer.ray[rayId];
+
+            origin = ray.o.xyz;
+            tmin = ray.o.w;
+            dir = ray.d.xyz;
+            result.t = ray.d.w;
+
+            f32 dotResult;
+            dotResult = dot_dop14_n0(dir);
+            idir[0] = 1.f / (abs(dotResult) > EPS_BV_INTERSECT ? dotResult : EPS_BV_INTERSECT * sign(dotResult));
+            dotResult = dot_dop14_n1(dir);
+            idir[1] = 1.f / (abs(dotResult) > EPS_BV_INTERSECT ? dotResult : EPS_BV_INTERSECT * sign(dotResult));
+            dotResult = dot_dop14_n2(dir);
+            idir[2] = 1.f / (abs(dotResult) > EPS_BV_INTERSECT ? dotResult : EPS_BV_INTERSECT * sign(dotResult));
+            dotResult = dot_dop14_n3(dir);
+            idirRest[0] = 1.f / (abs(dotResult) > EPS_BV_INTERSECT ? dotResult : EPS_BV_INTERSECT * sign(dotResult));
+            dotResult = dot_dop14_n4(dir);
+            idirRest[1] = 1.f / (abs(dotResult) > EPS_BV_INTERSECT ? dotResult : EPS_BV_INTERSECT * sign(dotResult));
+            dotResult = dot_dop14_n5(dir);
+            idirRest[2] = 1.f / (abs(dotResult) > EPS_BV_INTERSECT ? dotResult : EPS_BV_INTERSECT * sign(dotResult));
+            dotResult = dot_dop14_n6(dir);
+            idirRest[3] = 1.f / (abs(dotResult) > EPS_BV_INTERSECT ? dotResult : EPS_BV_INTERSECT * sign(dotResult));
+
+            ood[0] = dot_dop14_n0(origin) * idir[0];
+            ood[1] = dot_dop14_n1(origin) * idir[1];
+            ood[2] = dot_dop14_n2(origin) * idir[2];
+            oodRest[0] = dot_dop14_n3(origin) * idirRest[0];
+            oodRest[1] = dot_dop14_n4(origin) * idirRest[1];
+            oodRest[2] = dot_dop14_n5(origin) * idirRest[2];
+            oodRest[3] = dot_dop14_n6(origin) * idirRest[3];
+
+            stackId = 0;
+            leafId = 0;
+            nodeId = 0;
+            nodeDepth = 0;
+
+            result.tId = INVALID_ID;
+            result.bvId = INVALID_ID;
+            result.normal = vec3(0.f);
+        }
+
+        while (nodeId != BOTTOM_OF_STACK)
+        {
+            while (u32(nodeId) < u32(BOTTOM_OF_STACK))
+            {
+                nodeDepth++;
+
+                vec2 c0minmax;
+                vec2 c1minmax;
+                vec3 c0normal;
+                vec3 c1normal;
+
+                i32 dNodeId = nodeId >> 1;
+                ivec2 cnodes = ivec2(bvh.node[dNodeId].c[0], bvh.node[dNodeId].c[1]);
+
+                const vec2 t00 = bvh.node[dNodeId].bv[0].slab[0] * idir[0] - ood[0];
+                const vec2 t01 = bvh.node[dNodeId].bv[0].slab[1] * idir[1] - ood[1];
+                const vec2 t02 = bvh.node[dNodeId].bv[0].slab[2] * idir[2] - ood[2];
+                c0minmax = vec2(
+                        max(max(min(t00.x, t00.y), min(t01.x, t01.y)), max(min(t02.x, t02.y), tmin)),
+                        min(min(max(t00.x, t00.y), max(t01.x, t01.y)), min(max(t02.x, t02.y), result.t))
+                    );
+                if (c0minmax[0] == t00.x) c0normal = -DOP_NORMALS[0];
+                if (c0minmax[0] == t00.y) c0normal = DOP_NORMALS[0];
+                if (c0minmax[0] == t01.x) c0normal = -DOP_NORMALS[1];
+                if (c0minmax[0] == t01.y) c0normal = DOP_NORMALS[1];
+                if (c0minmax[0] == t02.x) c0normal = -DOP_NORMALS[2];
+                if (c0minmax[0] == t02.y) c0normal = DOP_NORMALS[2];
+
+                const vec2 t10 = bvh.node[dNodeId].bv[1].slab[0] * idir[0] - ood[0];
+                const vec2 t11 = bvh.node[dNodeId].bv[1].slab[1] * idir[1] - ood[1];
+                const vec2 t12 = bvh.node[dNodeId].bv[1].slab[2] * idir[2] - ood[2];
+                c1minmax = vec2(
+                        max(max(min(t10.x, t10.y), min(t11.x, t11.y)), max(min(t12.x, t12.y), tmin)),
+                        min(min(max(t10.x, t10.y), max(t11.x, t11.y)), min(max(t12.x, t12.y), result.t))
+                    );
+                if (c1minmax[0] == t10.x) c1normal = -DOP_NORMALS[0];
+                if (c1minmax[0] == t10.y) c1normal = DOP_NORMALS[0];
+                if (c1minmax[0] == t11.x) c1normal = -DOP_NORMALS[1];
+                if (c1minmax[0] == t11.y) c1normal = DOP_NORMALS[1];
+                if (c1minmax[0] == t12.x) c1normal = -DOP_NORMALS[2];
+                if (c1minmax[0] == t12.y) c1normal = DOP_NORMALS[2];
+
+                {
+                    if (c0minmax.x <= c0minmax.y && (cnodes[0] & 1) > 0) {
+                        const vec2 t03 = bvhRest.node[dNodeId].bv[0].slab[0] * idirRest[0] - oodRest[0];
+                        const vec2 t04 = bvhRest.node[dNodeId].bv[0].slab[1] * idirRest[1] - oodRest[1];
+                        const vec2 t05 = bvhRest.node[dNodeId].bv[0].slab[2] * idirRest[2] - oodRest[2];
+                        const vec2 t06 = bvhRest.node[dNodeId].bv[0].slab[3] * idirRest[3] - oodRest[3];
+                        c0minmax.x = max(c0minmax.x, max(max(min(t03.x, t03.y), min(t04.x, t04.y)), max(min(t05.x, t05.y), min(t06.x, t06.y))));
+                        c0minmax.y = min(c0minmax.y, min(min(max(t03.x, t03.y), max(t04.x, t04.y)), min(max(t05.x, t05.y), max(t06.x, t06.y))));
+
+                        if (c0minmax[0] == t03.x) c0normal = -DOP_NORMALS[3];
+                        if (c0minmax[0] == t03.y) c0normal = DOP_NORMALS[3];
+                        if (c0minmax[0] == t04.x) c0normal = -DOP_NORMALS[4];
+                        if (c0minmax[0] == t04.y) c0normal = DOP_NORMALS[4];
+                        if (c0minmax[0] == t05.x) c0normal = -DOP_NORMALS[5];
+                        if (c0minmax[0] == t05.y) c0normal = DOP_NORMALS[5];
+                        if (c0minmax[0] == t06.x) c0normal = -DOP_NORMALS[6];
+                        if (c0minmax[0] == t06.y) c0normal = DOP_NORMALS[6];
+                    }
+                }
+                {
+                    if (c1minmax.x <= c1minmax.y && (cnodes[1] & 1) > 0) {
+                        const vec2 t13 = bvhRest.node[dNodeId].bv[1].slab[0] * idirRest[0] - oodRest[0];
+                        const vec2 t14 = bvhRest.node[dNodeId].bv[1].slab[1] * idirRest[1] - oodRest[1];
+                        const vec2 t15 = bvhRest.node[dNodeId].bv[1].slab[2] * idirRest[2] - oodRest[2];
+                        const vec2 t16 = bvhRest.node[dNodeId].bv[1].slab[3] * idirRest[3] - oodRest[3];
+                        c1minmax.x = max(c1minmax.x, max(max(min(t13.x, t13.y), min(t14.x, t14.y)), max(min(t15.x, t15.y), min(t16.x, t16.y))));
+                        c1minmax.y = min(c1minmax.y, min(min(max(t13.x, t13.y), max(t14.x, t14.y)), min(max(t15.x, t15.y), max(t16.x, t16.y))));
+
+                        if (c1minmax[0] == t13.x) c1normal = -DOP_NORMALS[3];
+                        if (c1minmax[0] == t13.y) c1normal = DOP_NORMALS[3];
+                        if (c1minmax[0] == t14.x) c1normal = -DOP_NORMALS[4];
+                        if (c1minmax[0] == t14.y) c1normal = DOP_NORMALS[4];
+                        if (c1minmax[0] == t15.x) c1normal = -DOP_NORMALS[5];
+                        if (c1minmax[0] == t15.y) c1normal = DOP_NORMALS[5];
+                        if (c1minmax[0] == t16.x) c1normal = -DOP_NORMALS[6];
+                        if (c1minmax[0] == t16.y) c1normal = DOP_NORMALS[6];
+                    }
+                }
+
+                const bool swp = (c1minmax[0] < c0minmax[0]);
+                const bool traverseC0 = (c0minmax[1] >= c0minmax[0]);
+                const bool traverseC1 = (c1minmax[1] >= c1minmax[0]);
+
+                if (!traverseC0 && !traverseC1) {
+                    nodeId = traversalStack[stackId];
+                    nodeDepth = nodeDepthStack[stackId];
+                    --stackId;
+                }
+                else {
+                    f32 tMin = (traverseC0) ? c0minmax[0] : c1minmax[0];
+                    nodeId = (traverseC0) ? cnodes.x : cnodes.y;
+
+                    if (traverseC0 && traverseC1) {
+                        tMin = min(c0minmax[0], c1minmax[0]);
+
+                        if (swp) {
+                            i32 tmp = nodeId;
+                            nodeId = cnodes.y;
+                            cnodes.y = tmp;
+                        }
+                        if ((pc.depth == 0) || (pc.depth > nodeDepth && cnodes.y >= 0))
+                        {
+                            ++stackId;
+                            traversalStack[stackId] = cnodes.y;
+                            nodeDepthStack[stackId] = nodeDepth;
+                        }
+                    }
+
+                    // store bv intersection
+                    if ((pc.depth > 0) && (nodeDepth == pc.depth || nodeId < 0)) {
+                        if (tMin > tmin)
+                        {
+                            result.t = tMin;
+                            if (nodeId < 0)
+                                result.bvId = (nodeId & 0x07FFFFFF) >> 1;
+                            else
+                                result.bvId = nodeId >> 1;
+
+                            if (traverseC0 && tMin == c0minmax[0])
+                                result.normal = c0normal;
+                            if (traverseC1 && tMin == c1minmax[0])
+                                result.normal = c1normal;
+                        }
+                    }
+                }
+                bool fetchFromStack = false;
+                if (pc.depth == 0) {
+                    if (nodeId < 0 && leafId >= 0) {
+                        leafId = nodeId;
+                        fetchFromStack = true;
+                    }
+                }
+                else if (pc.depth == nodeDepth || nodeId < 0)
+                    fetchFromStack = true;
+
+                if (fetchFromStack) {
+                    nodeId = traversalStack[stackId];
+                    nodeDepth = nodeDepthStack[stackId];
+                    --stackId;
+                }
+
+                if (subgroupAll(leafId < 0))
+                    break;
+            }
+
+            while (leafId < 0) {
+                const i32 triStartId = (leafId & 0x07FFFFFF) >> 1;
+                const i32 triCount = ((leafId >> 27) & 0xF) + 1;
+
+                for (i32 triId = triStartId; triId < triStartId + triCount; ++triId) {
+                    const vec4 v00 = triangles.t[triId].v0;
+                    const vec4 v11 = triangles.t[triId].v1;
+                    const vec4 v22 = triangles.t[triId].v2;
+
+                    const f32 t = (v00.w - dot(origin, v00.xyz)) / dot(dir, v00.xyz);
+                    if (t > tmin && t < result.t) {
+                        const f32 u = v11.w + dot(origin, v11.xyz) + t * dot(dir, v11.xyz);
+                        if (u >= 0.f) {
+                            const f32 v = v22.w + dot(origin, v22.xyz) + t * dot(dir, v22.xyz);
+                            if (v >= 0.f && u + v <= 1.f) {
+                                result.t = t;
+                                result.bvId = (leafId & 0x07FFFFFF) >> 1;
+                                result.tId = triId;
+                            }
+                        }
+                    }
+                }
+                leafId = nodeId;
+
+                // Another leaf was postponed => process it as well.
+                if (nodeId < 0) {
+                    nodeId = traversalStack[stackId];
+                    nodeDepth = nodeDepthStack[stackId];
+                    --stackId;
+                }
+            }
+            // dynamic fetch
+            if (subgroupBallotBitCount(subgroupBallot(true)) < DYNAMIC_FETCH_THRESHOLD)
+                break;
+        }
+
+        if (nodeId == BOTTOM_OF_STACK) {
+            results.result[rayId] = result;
+        }
+    }
+}
+
+void traceTimed()
+{
+    TraceTime_ref times = TraceTime_ref(pc.data.traceTimeAddress);
+    if (gl_LocalInvocationIndex == 0) {
+        atomicMin(times.val.tStart, clockRealtimeEXT());
+        RayBufferMetadata_ref rayBufMeta = RayBufferMetadata_ref(pc.data.rayBufferMetadataAddress);
+        times.val.rayCount = rayBufMeta.data.rayCount;
+    }
+    barrier();
+
+    trace();
+
+    barrier();
+    if (gl_LocalInvocationIndex == 0) {
+        atomicMax(times.val.timer, u32(clockRealtimeEXT() - times.val.tStart));
+    }
+}
+
+void main()
+{
+    traceTimed();
+}

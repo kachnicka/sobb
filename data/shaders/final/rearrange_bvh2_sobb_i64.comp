@@ -1,0 +1,15 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#define DOP_64
+#define SRC_BVH_TYPE BVH2_SOBBi
+#include "shared/header_bvh_rearrangement.glsl"
+#include "shared/bv_dop.glsl"
+#include "shared/bv_sobb.glsl"
+#include "rearrange_bvh2.glsl"
+
+void main()
+{
+    rearrange();
+}

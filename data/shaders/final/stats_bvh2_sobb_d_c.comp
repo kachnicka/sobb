@@ -1,0 +1,14 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#define WIDTH 2
+#define BVH_TYPE BVH2_SOBB_c
+#include "shared/header_bvh_stats.glsl"
+#include "shared/bv_sobb.glsl"
+#include "stats__bvh_c.glsl"
+
+void main()
+{
+    stats();
+}

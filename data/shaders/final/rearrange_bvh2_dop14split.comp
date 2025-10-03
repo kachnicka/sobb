@@ -1,0 +1,181 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#define DOP_14
+#include "shared/header_bvh_rearrangement.glsl"
+#include "shared/bv_dop.glsl"
+
+#extension GL_EXT_buffer_reference2: require
+#extension GL_EXT_scalar_block_layout: require
+
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_control_flow_attributes: require
+
+#define INCLUDE_FROM_SHADER
+#include "shared/data_bvh.h"
+#include "shared/data_plocpp.h"
+
+layout(local_size_x_id = 0) in;
+
+layout(push_constant) uniform uPushConstant {
+    PC_Rearrange data;
+} pc;
+
+struct WorkItem {
+    i32 bvhId;
+    i32 bvhWideId;
+};
+
+struct RuntimeData {
+    u32 workgroupId;
+    u32 workItemId;
+    i32 wideId;
+};
+layout(buffer_reference, scalar) buffer RuntimeData_ref {
+    RuntimeData data;
+};
+
+#define UNROLL_NEXT_LOOP [[unroll]]
+#define WIDTH 2
+
+shared u32 partitionId;
+
+AABB splitAabb(in DOP dop)
+{
+    return AABB(
+        vec3(dop_min(dop, 0), dop_min(dop, 1), dop_min(dop, 2)),
+        vec3(dop_max(dop, 0), dop_max(dop, 1), dop_max(dop, 2)));
+}
+
+DOP3 splitSlabs_0to2(in DOP dop)
+{
+    DOP3 result;
+    result.slab[0] = vec2(dop_min(dop, 0), dop_max(dop, 0));
+    result.slab[1] = vec2(dop_min(dop, 1), dop_max(dop, 1));
+    result.slab[2] = vec2(dop_min(dop, 2), dop_max(dop, 2));
+    return result;
+}
+
+DOP4 splitSlabs_3to6(in DOP dop)
+{
+    DOP4 result;
+    result.slab[0] = vec2(dop_min(dop, 3), dop_max(dop, 3));
+    result.slab[1] = vec2(dop_min(dop, 4), dop_max(dop, 4));
+    result.slab[2] = vec2(dop_min(dop, 5), dop_max(dop, 5));
+    result.slab[3] = vec2(dop_min(dop, 6), dop_max(dop, 6));
+    return result;
+}
+
+void rearrange()
+{
+    RuntimeData_ref runtime = RuntimeData_ref(pc.data.runtimeDataAddress);
+    if (gl_LocalInvocationIndex == 0)
+        partitionId = atomicAdd(runtime.data.workgroupId, 1);
+    barrier();
+    const u32 wgId = partitionId;
+    const u32 globalThreadId = partitionId * gl_WorkGroupSize.x + gl_LocalInvocationIndex;
+
+    if (globalThreadId >= pc.data.leafNodeCount)
+        return;
+
+    BVH2_DOP14 bvh = BVH2_DOP14(pc.data.bvhAddress);
+    BVH2_DOP3_c bvhAabb = BVH2_DOP3_c(pc.data.bvhWideAddress);
+    BVH2_DOP14_SPLIT_c bvhRest = BVH2_DOP14_SPLIT_c(pc.data.auxBufferAddress);
+    u64_buf workItems = u64_buf(pc.data.workBufferAddress);
+
+    WorkItem wi;
+    u64 wiPacked;
+
+    while (true) {
+        wiPacked = atomicLoad(workItems.val[globalThreadId],
+                gl_ScopeQueueFamily, gl_StorageSemanticsBuffer, gl_SemanticsAcquire | gl_SemanticsMakeVisible);
+        wi.bvhId = i32(wiPacked);
+        wi.bvhWideId = i32(wiPacked >> 32);
+
+        if (wi.bvhId < 0)
+            break;
+
+        if (wi.bvhId >= 0 && wi.bvhId < INVALID_VALUE_I32) {
+            i32 c[WIDTH];
+            float sa[WIDTH];
+            i32 nonLeafCount = 0;
+            c[0] = bvh.node[wi.bvhId].c0;
+            c[1] = bvh.node[wi.bvhId].c1;
+
+            for (i32 i = 0; i < WIDTH; i++) {
+                i32 cId = c[i];
+                if (c[i] < 0)
+                    cId = ~cId;
+                else
+                    nonLeafCount++;
+                sa[i] = bvArea(bvh.node[cId].bv);
+            }
+
+            // bigger node first
+            if (sa[0] < sa[1]) {
+                i32 tmp = c[0];
+                c[0] = c[1];
+                c[1] = tmp;
+                f32 tmp2 = sa[0];
+                sa[0] = sa[1];
+                sa[1] = tmp2;
+            }
+
+            NodeBVH2_DOP3_c nodeAabb;
+            NodeBVH2_DOP14_SPLIT_c nodeRest;
+
+            i32 wideIdOffset;
+            i32 interiorCount = subgroupAdd(nonLeafCount);
+            if (subgroupElect())
+                wideIdOffset = atomicAdd(runtime.data.wideId, interiorCount);
+            wideIdOffset = subgroupBroadcastFirst(wideIdOffset) + subgroupExclusiveAdd(nonLeafCount);
+            i32 wideIdLocalOffset = 0;
+
+            u32 wiOffset;
+            const uvec4 ballot = subgroupBallot(true);
+            const u32 ballotBitCount = subgroupBallotBitCount(ballot);
+            if (subgroupElect())
+                wiOffset = atomicAdd(runtime.data.workItemId, ballotBitCount);
+            wiOffset = subgroupBroadcastFirst(wiOffset) + subgroupBallotExclusiveBitCount(ballot);
+
+            UNROLL_NEXT_LOOP
+            for (i32 i = 0; i < WIDTH; i++) {
+                i32 cId = c[i] < 0 ? ~c[i] : c[i];
+                nodeAabb.bv[i] = splitSlabs_0to2(bvh.node[cId].bv);
+                nodeRest.bv[i] = splitSlabs_3to6(bvh.node[cId].bv);
+
+                // flag: test the rest of the k-dop planes if the surface area is reduced enough
+                i32 testTheRestFlag = i32(sa[i] < (.75f * bvArea(splitAabb(bvh.node[cId].bv))));
+
+                if (c[i] < 0) {
+                    i32 size = abs(bvh.node[cId].size) - 1;
+                    i32 c0 = bvh.node[cId].c0;
+                    nodeAabb.c[i] = (1 << 31) | (size << 27) | (c0 << 1) | testTheRestFlag;
+                    wiPacked = (u64(wi.bvhWideId) << 32) | u32(c[i]);
+                }
+                else {
+                    i32 wideId = wideIdOffset + (wideIdLocalOffset++);
+                    nodeAabb.c[i] = (wideId << 1) | testTheRestFlag;
+                    wiPacked = (u64(wideId) << 32) | u32(c[i]);
+                }
+
+                u32 workItemId = globalThreadId;
+                if (i > 0)
+                    workItemId = wiOffset + i - 1;
+
+                atomicStore(workItems.val[workItemId], wiPacked,
+                    gl_ScopeQueueFamily, gl_StorageSemanticsBuffer, gl_SemanticsRelease | gl_SemanticsMakeAvailable);
+            }
+            bvhAabb.node[wi.bvhWideId] = nodeAabb;
+            bvhRest.node[wi.bvhWideId] = nodeRest;
+        }
+    }
+}
+
+void main()
+{
+    rearrange();
+}

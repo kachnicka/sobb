@@ -1,0 +1,16 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#define WIDTH 2
+#define BVH_TYPE BVH2_SOBBi_c
+#define DOP_64
+#include "shared/header_bvh_stats.glsl"
+#include "shared/bv_dop.glsl"
+#include "shared/bv_sobb.glsl"
+#include "stats__bvh_c.glsl"
+
+void main()
+{
+    stats();
+}

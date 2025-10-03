@@ -1,0 +1,16 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#include "shared/header_bvh_traversal.glsl"
+
+#define INTERSECTION_AABB
+#define BVH_TYPE BVH2_AABB_c
+#include "shared/bv_aabb.glsl"
+#include "shared/intersection.glsl"
+#include "ptrace_bvh2.glsl"
+
+void main()
+{
+    traceTimed();
+}

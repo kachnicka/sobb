@@ -1,0 +1,11 @@
+path_prefix_scene = 'scene/'
+path_prefix_camera = 'scene/'
+
+startup_scene = 'bistro_int'
+
+[[scenes]]
+name = 'bistro_int'
+cam = 'camera_bint'
+bin = 'bistro_int.ob'
+# not distributed
+file = 'BistroInterior.fbx'

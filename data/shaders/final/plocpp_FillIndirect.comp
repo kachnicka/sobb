@@ -1,0 +1,27 @@
+#version 460
+
+#extension GL_EXT_buffer_reference2: require
+#extension GL_EXT_scalar_block_layout: require
+#extension GL_GOOGLE_include_directive : enable
+
+#define INCLUDE_FROM_SHADER
+#include "shared/types.glsl"
+#include "shared/compute.glsl"
+#include "shared/data_plocpp.h"
+
+layout(local_size_x = 1) in;
+
+layout(push_constant, scalar) uniform uPushConstant {
+    u64 indirectDispatchBufferAddress;
+} pc;
+
+void main() {
+    if (gl_GlobalInvocationID.x > 0)
+        return;
+
+    // TODO: dop14 will need to adjust the 1024 value, pass in pc
+    IndirectClusters_ref idb = IndirectClusters_ref(pc.indirectDispatchBufferAddress);
+    idb.ic.wg_x = divCeil(idb.ic.cntClustersTotal, 1024);
+    idb.ic.wg_y = 1;
+    idb.ic.wg_z = 1;
+}

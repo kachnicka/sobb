@@ -1,0 +1,14 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#define DOP_14
+#define SRC_BVH_TYPE BVH2_DOP14
+#include "shared/header_bvh_rearrangement.glsl"
+#include "shared/bv_dop.glsl"
+#include "rearrange_bvh2.glsl"
+
+void main()
+{
+    rearrange();
+}

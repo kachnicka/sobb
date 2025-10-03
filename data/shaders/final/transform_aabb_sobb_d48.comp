@@ -1,0 +1,12 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#define DOP_48
+#define TRANSFORM_SOBB
+#include "transform_aabb_sobb.glsl"
+
+void main()
+{
+    transform(gl_WorkGroupID.x);
+}

@@ -1,0 +1,229 @@
+benchmark_scenes = [
+   'bistro_int',
+]
+
+benchmark_pipelines = [
+   'AABB_2',
+   '->DOP14_2 split',
+   '->OBB_2 dito14',
+   '->SOBB_2 32d',
+   '->SOBB_2 32i',
+   '->SOBB_2 48d',
+   '->SOBB_2 48i',
+   '->SOBB_2 64d',
+   '->SOBB_2 64i',
+]
+
+[default_pipeline]
+plocpp.bv = 'aabb'
+plocpp.shader.initial_clusters = 'builder.plocpp.aabb_initial_clusters'
+plocpp.shader.iterations = 'builder.plocpp.aabb_iterations'
+plocpp.space_filling = 'morton32'
+plocpp.initial_clusters = 'triangles'
+plocpp.radius = 16
+
+collapsing.bv = 'aabb'
+collapsing.shader.collapse = 'collapse.default'
+collapsing.max_leaf_size = 8
+collapsing.c_t = 3.0
+collapsing.c_i = 2.0
+
+transformation.bv = ''
+
+rearrangement.bv = 'aabb'
+rearrangement.shader.rearrange = 'rearrange.w2.aabb'
+rearrangement.layout = 'bvh2'
+
+stats.bv = ''
+stats.c_t = 3.0
+stats.c_i = 2.0
+
+tracer.shader.gen_primary = 'trace.gen_primary.default'
+tracer.shader.trace_rays = 'trace.w2.aabb'
+tracer.shader.shade_and_cast = 'trace.shade_and_cast.default'
+tracer.shader.trace_bv = 'trace.w2.aabb_bv'
+tracer.shader.shade_and_cast_bv = 'trace.shade_and_cast.bounding_volumes'
+tracer.shader.trace_int = 'trace.w2.aabb_intersections'
+tracer.shader.shade_and_cast_int = 'trace.shade_and_cast.intersections'
+
+tracer.bv = 'aabb'
+tracer.rays_primary.workgroup_count = 512
+tracer.rays_primary.warps_per_workgroup = 10
+tracer.rays_secondary.workgroup_count = 512
+tracer.rays_secondary.warps_per_workgroup = 4
+
+[[benchmark]]
+name = 'AABB_2'
+
+[[benchmark]]
+name = '->OBB_2 dito14'
+collapsing.c_t = 4.5
+stats.c_t = 4.5
+transformation.bv = 'obb'
+rearrangement.bv = 'obb'
+tracer.bv = 'obb'
+transformation.shader.transform = 'transform.aabb.obb_dito14'
+rearrangement.shader.rearrange = 'rearrange.w2.obb'
+tracer.shader.trace_rays = 'trace.w2.obb'
+tracer.shader.trace_int = 'trace.w2.obb_intersections'
+tracer.shader.trace_bv = 'trace.w2.obb_bv'
+tracer.rays_secondary.workgroup_count = 1024
+tracer.rays_secondary.warps_per_workgroup = 2
+
+[[benchmark]]
+name = '->DOP14_2'
+collapsing.c_t = 4.5
+stats.c_t = 4.5
+transformation.bv = 'dop14'
+rearrangement.bv = 'dop14'
+tracer.bv = 'dop14'
+transformation.shader.transform = 'transform.aabb.dop14'
+rearrangement.shader.rearrange = 'rearrange.w2.dop14'
+tracer.shader.trace_rays = 'trace.w2.dop14'
+tracer.shader.trace_int = 'trace.w2.dop14_intersections'
+tracer.shader.trace_bv = 'trace.w2.dop14_bv'
+tracer.rays_secondary.workgroup_count = 512
+tracer.rays_secondary.warps_per_workgroup = 4
+
+[[benchmark]]
+name = '->DOP14_2 split'
+parent = '->DOP14_2'
+rearrangement.bv = 'dop14split'
+tracer.bv = 'dop14split'
+rearrangement.shader.rearrange = 'rearrange.w2.dop14split'
+tracer.shader.trace_rays = 'trace.w2.dop14split'
+tracer.shader.trace_int = 'trace.w2.dop14split_intersections'
+tracer.shader.trace_bv = 'trace.w2.dop14split_bv'
+
+[[benchmark]]
+name = '->SOBB_2 32d'
+collapsing.c_t = 4.5
+stats.c_t = 4.5
+transformation.bv = 'sobb_d32'
+rearrangement.bv = 'sobb_d'
+tracer.bv = 'sobb_d'
+transformation.shader.transform = 'transform.aabb.sobb_d32'
+rearrangement.shader.rearrange = 'rearrange.w2.sobb_d'
+tracer.shader.trace_rays = 'trace.w2.sobb_d'
+tracer.shader.trace_int = 'trace.w2.sobb_d_intersections'
+tracer.shader.trace_bv = 'trace.w2.sobb_d_bv'
+tracer.rays_secondary.workgroup_count = 1024
+tracer.rays_secondary.warps_per_workgroup = 2
+
+[[benchmark]]
+name = '->SOBB_2 48d'
+parent = '->SOBB_2 32d'
+transformation.bv = 'sobb_d48'
+transformation.shader.transform = 'transform.aabb.sobb_d48'
+
+[[benchmark]]
+name = '->SOBB_2 64d'
+parent = '->SOBB_2 32d'
+transformation.bv = 'sobb_d64'
+transformation.shader.transform = 'transform.aabb.sobb_d64'
+
+[[benchmark]]
+name = '->SOBB_2 32i'
+collapsing.c_t = 4.5
+stats.c_t = 4.5
+transformation.bv = 'sobb_i32'
+rearrangement.bv = 'sobb_i32'
+tracer.bv = 'sobb_i32'
+transformation.shader.transform = 'transform.aabb.sobb_i32'
+rearrangement.shader.rearrange = 'rearrange.w2.sobb_i32'
+tracer.shader.trace_rays = 'trace.w2.sobb_i32'
+tracer.shader.trace_int = 'trace.w2.sobb_i32_intersections'
+tracer.shader.trace_bv = 'trace.w2.sobb_i32_bv'
+tracer.rays_secondary.workgroup_count = 1024
+tracer.rays_secondary.warps_per_workgroup = 2
+
+[[benchmark]]
+name = '->SOBB_2 48i'
+parent = '->SOBB_2 32i'
+transformation.bv = 'sobb_i48'
+rearrangement.bv = 'sobb_i48'
+tracer.bv = 'sobb_i48'
+transformation.shader.transform = 'transform.aabb.sobb_i48'
+rearrangement.shader.rearrange = 'rearrange.w2.sobb_i48'
+tracer.shader.trace_rays = 'trace.w2.sobb_i48'
+tracer.shader.trace_bv = 'trace.w2.sobb_i48_bv'
+tracer.shader.trace_int = 'trace.w2.sobb_i48_intersections'
+
+[[benchmark]]
+name = '->SOBB_2 64i'
+parent = '->SOBB_2 32i'
+transformation.bv = 'sobb_i64'
+rearrangement.bv = 'sobb_i64'
+tracer.bv = 'sobb_i64'
+transformation.shader.transform = 'transform.aabb.sobb_i64'
+rearrangement.shader.rearrange = 'rearrange.w2.sobb_i64'
+tracer.shader.trace_rays = 'trace.w2.sobb_i64'
+tracer.shader.trace_int = 'trace.w2.sobb_i64_intersections'
+tracer.shader.trace_bv = 'trace.w2.sobb_i64_bv'
+
+
+
+[shader.builder.plocpp]
+aabb_initial_clusters = 'final/plocpp_aabb_InitialClusters.comp.spv'
+aabb_iterations = 'final/plocpp_aabb_PLOCpp.comp.spv'
+
+[shader.collapse]
+default = 'final/collapse_aabb.comp.spv'
+
+[shader.transform.aabb]
+dop14 = 'final/transform_aabb_dop14.comp.spv'
+obb_dito14 = 'final/transform_aabb_obb_dito14.comp.spv'
+sobb_d32 = 'final/transform_aabb_sobb_d32.comp.spv'
+sobb_d48 = 'final/transform_aabb_sobb_d48.comp.spv'
+sobb_d64 = 'final/transform_aabb_sobb_d64.comp.spv'
+sobb_i32 = 'final/transform_aabb_sobb_i32.comp.spv'
+sobb_i48 = 'final/transform_aabb_sobb_i48.comp.spv'
+sobb_i64 = 'final/transform_aabb_sobb_i64.comp.spv'
+
+[shader.rearrange.w2]
+aabb = 'final/rearrange_bvh2_aabb.comp.spv'
+dop14 = 'final/rearrange_bvh2_dop14.comp.spv'
+dop14split = 'final/rearrange_bvh2_dop14split.comp.spv'
+obb = 'final/rearrange_bvh2_obb.comp.spv'
+sobb_d = 'final/rearrange_bvh2_sobb_d.comp.spv'
+sobb_i32 = 'final/rearrange_bvh2_sobb_i32.comp.spv'
+sobb_i48 = 'final/rearrange_bvh2_sobb_i48.comp.spv'
+sobb_i64 = 'final/rearrange_bvh2_sobb_i64.comp.spv'
+
+[shader.trace.gen_primary]
+default = 'final/ptrace_GeneratePrimaryRays.comp.spv'
+
+[shader.trace.shade_and_cast]
+default = 'final/ptrace_ShadeAndCast.comp.spv'
+bounding_volumes = 'final/ptrace_ShadeAndCast_BV.comp.spv'
+intersections = 'final/ptrace_ShadeAndCast_intersections.comp.spv'
+
+[shader.trace.w2]
+aabb = 'final/ptrace_bvh2_aabb.comp.spv'
+aabb_bv = 'final/ptrace_bvh2_aabb_BV.comp.spv'
+aabb_intersections = 'final/ptrace_bvh2_aabb_intersections.comp.spv'
+
+dop14 = 'final/ptrace_bvh2_dop14.comp.spv'
+dop14_bv = 'final/ptrace_bvh2_dop14_BV.comp.spv'
+dop14_intersections = 'final/ptrace_bvh2_dop14_intersections.comp.spv'
+dop14split = 'final/ptrace_bvh2_dop14split.comp.spv'
+dop14split_bv = 'final/ptrace_bvh2_dop14split_BV.comp.spv'
+dop14split_intersections = 'final/ptrace_bvh2_dop14split_intersections.comp.spv'
+
+obb = 'final/ptrace_bvh2_obb.comp.spv'
+obb_bv = 'final/ptrace_bvh2_obb_BV.comp.spv'
+obb_intersections = 'final/ptrace_bvh2_obb_intersections.comp.spv'
+
+sobb_d = 'final/ptrace_bvh2_sobb_d.comp.spv'
+sobb_d_bv = 'final/ptrace_bvh2_sobb_d_BV.comp.spv'
+sobb_d_intersections = 'final/ptrace_bvh2_sobb_d_intersections.comp.spv'
+
+sobb_i32 = 'final/ptrace_bvh2_sobb_i32.comp.spv'
+sobb_i48 = 'final/ptrace_bvh2_sobb_i48.comp.spv'
+sobb_i64 = 'final/ptrace_bvh2_sobb_i64.comp.spv'
+sobb_i32_bv = 'final/ptrace_bvh2_sobb_i32_BV.comp.spv'
+sobb_i48_bv = 'final/ptrace_bvh2_sobb_i48_BV.comp.spv'
+sobb_i64_bv = 'final/ptrace_bvh2_sobb_i64_BV.comp.spv'
+sobb_i32_intersections = 'final/ptrace_bvh2_sobb_i32_intersections.comp.spv'
+sobb_i48_intersections = 'final/ptrace_bvh2_sobb_i48_intersections.comp.spv'
+sobb_i64_intersections = 'final/ptrace_bvh2_sobb_i64_intersections.comp.spv'

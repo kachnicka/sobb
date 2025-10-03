@@ -1,0 +1,11 @@
+/build*
+/cmake-build-*
+/out
+/install
+/.idea
+
+/.cache
+compile_commands.json
+
+/data/animation
+/data/image

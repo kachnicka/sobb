@@ -1,0 +1,13 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+
+#define SRC_BVH_TYPE BVH2_OBB
+#include "shared/header_bvh_rearrangement.glsl"
+#include "shared/bv_obb.glsl"
+#include "rearrange_bvh2.glsl"
+
+void main()
+{
+    rearrange();
+}

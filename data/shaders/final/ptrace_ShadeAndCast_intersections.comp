@@ -1,0 +1,179 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_buffer_reference2: require
+#extension GL_EXT_scalar_block_layout: require
+#extension GL_KHR_shader_subgroup_ballot : require
+
+#define INCLUDE_FROM_SHADER
+#include "shared/types.glsl"
+#include "shared/random.glsl"
+#include "shared/compute.glsl"
+#include "shared/rt_common.glsl"
+
+#include "shared/data_bvh.h"
+#include "shared/data_ptrace.h"
+#include "shared/data_scene.h"
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D image;
+layout(set = 0, binding = 1) uniform Camera {
+    mat4 view;
+    mat4 projection;
+    mat4 viewInv;
+    mat4 projectionInv;
+} camera;
+
+layout(push_constant, scalar) uniform uPushConstant
+{
+    PC_ShadeCast data;
+} pc;
+
+layout(local_size_x = 1024, local_size_y = 1, local_size_z = 1) in;
+
+struct RayInfo {
+    RayBufferMetadata_ref rayBufferMetadata;
+    RayBuffer_ref rayBuffer;
+    RayPayloadBuffer_ref rayPayload;
+};
+
+float fade(in float low, in float high, in float value)
+{
+    float mid = (low + high) * .5f;
+    float range = (high - low) * .5f;
+    float x = 1.f - clamp(abs(mid - value) / range, 0.f, 1.f);
+    return smoothstep(0.f, 1.f, x);
+}
+
+// vec3 temperature(in float intensity)
+// {
+//     const vec3 blue = vec3(0.f, 0.f, 1.f);
+//     const vec3 cyan = vec3(0.f, 1.f, 1.f);
+//     const vec3 green = vec3(0.f, 1.f, 0.f);
+//     const vec3 yellow = vec3(1.f, 1.f, 0.f);
+//     const vec3 red = vec3(1.f, 0.f, 0.f);
+//
+//     vec3 color = (fade(-0.25f, 0.25f, intensity) * blue
+//             + fade(0.0f, 0.5f, intensity) * cyan
+//             + fade(0.25f, 0.75f, intensity) * green
+//             + fade(0.5f, 1.0f, intensity) * yellow
+//             + smoothstep(0.75f, 1.0f, intensity) * red);
+//     return color;
+// }
+
+vec3 temperature(in float value) {
+    vec3 color = vec3(0.f);
+    if (value < 0.25f) {
+        color = mix(vec3(0.05f, 0.0f, 0.1f), vec3(0.3f, 0.0f, 0.5f), value / 0.25f);
+    } else if (value < 0.5f) {
+        color = mix(vec3(0.3f, 0.0f, 0.5f), vec3(0.7f, 0.0f, 0.8f), (value - 0.25f) / 0.25f);
+    } else if (value < 0.75f) {
+        color = mix(vec3(0.7f, 0.0f, 0.8f), vec3(1.0f, 0.4f, 0.2f), (value - 0.5f) / 0.25f);
+    } else {
+        color = mix(vec3(1.0f, 0.4f, 0.2f), vec3(1.0f, 1.0f, 0.6f), (value - 0.75f) / 0.25f);
+    }
+
+    return color;
+}
+
+void main()
+{
+    RayInfo rayInfoRead = RayInfo(
+            RayBufferMetadata_ref(pc.data.read_rayBufferMetadataAddress),
+            RayBuffer_ref(pc.data.read_rayBufferAddress),
+            RayPayloadBuffer_ref(pc.data.read_rayPayloadAddress)
+        );
+
+    const u32 rayCount = rayInfoRead.rayBufferMetadata.data.rayCount;
+    const u32 rayId = gl_GlobalInvocationID.x;
+    if (rayId >= rayCount)
+        return;
+
+    u32 packedPixelPos = rayInfoRead.rayPayload.val[rayId].packedPosition;
+    ivec2 pixelPos = ivec2(packedPixelPos >> 18, (packedPixelPos >> 4) & 0x3FFF);
+
+    RayTraceResults_Intersections_ref results = RayTraceResults_Intersections_ref(pc.data.rayTraceResultAddress);
+    RayTraceResult_Intersections result = results.result[rayId];
+    Ray r = rayInfoRead.rayBuffer.ray[rayId];
+
+    vec3 throughput = rayInfoRead.rayPayload.val[rayId].throughput;
+
+    f32 samples = 0.f;
+    if (pc.data.dirLight.z > 0.f) samples += result.boundingVolumes;
+    if (pc.data.dirLight.w > 0.f) samples += result.triangles;
+    if (pc.data.depth > 0)
+        samples += imageLoad(image, pixelPos).x;
+
+    if (result.tId == INVALID_ID || pc.data.depth + 1 > pc.data.depthMax) {
+        const f32 upper = pc.data.dirLight.y - pc.data.dirLight.x;
+        samples = min(max(0, samples - pc.data.dirLight.x), upper);
+        vec3 mySampleColor = temperature(samples / upper);
+        imageStore(image, pixelPos, vec4(mySampleColor, 1.f));
+        return;
+    }
+    else
+        imageStore(image, pixelPos, vec4(vec3(samples), 1.f));
+
+    // cast secondary ray
+    GeometryDescriptor gDesc = GeometryDescriptor(pc.data.geometryDescriptorAddress);
+    BvhTriangleIndices triangleIndices = BvhTriangleIndices(pc.data.bvhTriangleIndicesAddress);
+
+    u32 instanceId = triangleIndices.val[result.tId].nodeId;
+    u32 primitiveId = triangleIndices.val[result.tId].triangleId;
+
+    Geometry g = gDesc.g[instanceId];
+    uvec3_buf indices = uvec3_buf(g.idxAddress);
+    const uvec3 idx = indices.val[primitiveId];
+
+    //    fvec3_buf vertices = fvec3Buf(g.vtxAddress);
+    //    const vec3 v0 = vertices.val[idx.x];
+    //    const vec3 v1 = vertices.val[idx.y];
+    //    const vec3 v2 = vertices.val[idx.z];
+
+    vec3_buf normals = vec3_buf(g.normalAddress);
+    const vec3 n0 = normals.val[idx.x];
+    const vec3 n1 = normals.val[idx.y];
+    const vec3 n2 = normals.val[idx.z];
+
+    // const vec3 barycentrics = vec3(1.0 - result.u - result.v, result.u, result.v);
+
+    const vec3 barycentrics = vec3(result.u, result.v, 1.f - result.u - result.v);
+    // const vec3 barycentrics = vec3(0.33333f);
+
+    const vec3 pos = r.o.xyz + r.d.xyz * result.t;
+    //    const vec3 pos = v0 * barycentrics.x + v1 * barycentrics.y + v2 * barycentrics.z;
+    vec3 nrm = n0 * barycentrics.x + n1 * barycentrics.y + n2 * barycentrics.z;
+    //    const vec3 worldNrm = normalize(vec3(nrm * prd.worldToObject));  // Transforming the normal to world space
+    //    const vec3 worldPos = vec3(prd.objectToWorld * vec4(pos, 1.0));  // Transforming the position to world space
+
+    u32 seed = rayInfoRead.rayPayload.val[rayId].seed;
+    // Lambert sample
+    const vec3 albedo = vec3(1.f);
+    const vec3 newDirection = SampleHemisphereCosineWorldSpace(rnd(seed), rnd(seed), nrm);
+    const f32 cosTheta = dot(newDirection, nrm);
+    const vec3 f = albedo * M_PI_INV;
+    const f32 pdf = cosTheta * M_PI_INV;
+
+    throughput *= (f * cosTheta) / pdf;
+    r.o = vec4(OffsetRay(pos, nrm), .01f);
+    r.d = vec4(newDirection, BIG_FLOAT);
+
+    RayInfo rayInfoWrite = RayInfo(
+            RayBufferMetadata_ref(pc.data.write_rayBufferMetadataAddress),
+            RayBuffer_ref(pc.data.write_rayBufferAddress),
+            RayPayloadBuffer_ref(pc.data.write_rayPayloadAddress)
+        );
+
+    const uvec4 ballot = subgroupBallot(true);
+    u32 newRayId;
+    if (subgroupElect()) {
+        //        newRayId = atomicAdd(useIdx0 ? rayBufferMetadata.data_1.rayCount : rayBufferMetadata.data_0.rayCount, subgroupBallotBitCount(ballot));
+        newRayId = atomicAdd(rayInfoWrite.rayBufferMetadata.data.rayCount, subgroupBallotBitCount(ballot));
+    }
+    newRayId = subgroupBroadcastFirst(newRayId) + subgroupBallotExclusiveBitCount(ballot);
+
+    packedPixelPos = (packedPixelPos & ~0xfu) | RAY_TYPE_SECONDARY;
+    rayInfoWrite.rayBuffer.ray[newRayId] = r;
+    rayInfoWrite.rayPayload.val[newRayId].packedPosition = packedPixelPos;
+    rayInfoWrite.rayPayload.val[newRayId].seed = seed;
+    rayInfoWrite.rayPayload.val[newRayId].throughput = throughput;
+}
