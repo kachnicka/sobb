@@ -37,7 +37,7 @@ For each BVH, three outputs are available: path traced, BVH levels explorer, and
 #### Important algorithms:
 1. [SOBB BVH construction](data/shaders/final/transform_aabb_sobb.glsl) by parallel bottom-up refit of AABB BVH.
 2. [SOBB](data/shaders/final/shared/bv_sobb.glsl) surface area, k-DOP exploration strategies.
-3. [Generic BVH2 traversal](data/shaders/final/ptrace_bvh2.comp) specialized for all tested BVs. 
+3. [Generic BVH2 traversal](data/shaders/final/ptrace_bvh2.glsl) specialized for all tested BVs. 
 4. [Intersection tests](data/shaders/final/shared/intersection.glsl#L236) for SOBBs (and other BVs).
 
 On the host side, BVH construction is directed from [BvhBuilder.h](src/sobb/backend/vulkan/workload/bvh/BvhBuilder.h).

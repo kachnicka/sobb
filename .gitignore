@@ -8,4 +8,5 @@
 compile_commands.json
 
 /data/animation
-/data/image
+/data/image/*
+!/data/image/sobb.png
